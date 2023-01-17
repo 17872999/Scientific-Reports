@@ -1,0 +1,106 @@
+% 软件版本 MATLAB 2020a,低版本的部分函数无法使用
+
+% 使用深度网络对声音进行分类
+% 该示例展示了利用深度学习对声音进行分类的过程
+
+
+% 创建数据集
+% 生成1000个白噪声信号，1000个布朗噪声信号，1000个粉红噪声信号。
+% 每段音频持续0.5s,采样频率为44.1kHz
+fs = 44.1e3;    % 声音的采样频率44.1kHz
+duration = 0.5;
+N = duration*fs;
+
+
+wNoise = 2*rand([N,1000]) - 1;
+wLabels = repelem(categorical("white"),1000,1);
+
+bNoise = filter(1,[1,-0.999],wNoise);
+bNoise = bNoise./max(abs(bNoise),[],'all');
+bLabels = repelem(categorical("brown"),1000,1);
+
+pNoise = pinknoise([N,1000]);
+pLabels = repelem(categorical("pink"),1000,1);
+
+% 查看数据集
+% 听一段白噪声，并通过频谱图观察其特征
+sound(wNoise(:,1),fs)
+melSpectrogram(wNoise(:,1),fs)
+title('White Noise')
+
+% 观察布朗噪声特征
+sound(bNoise(:,1),fs)
+melSpectrogram(bNoise(:,1),fs)
+title('Brown Noise')
+
+% 观察粉红噪声的特征
+sound(pNoise(:,1),fs)
+melSpectrogram(pNoise(:,1),fs)
+title('Pink Noise')
+
+% 按8：2的比例将数据集划分为训练集和测试集
+% 每种类型的噪声使用800个作为训练集
+audioTrain = [wNoise(:,1:800),bNoise(:,1:800),pNoise(:,1:800)];
+labelsTrain = [wLabels(1:800);bLabels(1:800);pLabels(1:800)];
+% 使用剩余的200组作为测试集
+audioValidation = [wNoise(:,801:end),bNoise(:,801:end),pNoise(:,801:end)];
+labelsValidation = [wLabels(801:end);bLabels(801:end);pLabels(801:end)];
+
+% 提取特征
+% 音频数据是高维的，通常包含冗余信息。通过先提取特征，然后使用提取的特征训练模型，可以降低维度。
+% 创建audioFeatureExtractor对象以提取mel光谱随时间变化的质心和斜率。
+aFE = audioFeatureExtractor("SampleRate",fs, ...
+    "SpectralDescriptorInput","melSpectrum", ...
+    "spectralCentroid",true, ...
+    "spectralSlope",true);
+
+% 调用extract函数从音频的训练数据中提取特征
+featuresTrain = extract(aFE,audioTrain);
+[numHopsPerSequence,numFeatures,numSignals] = size(featuresTrain)
+
+% 在下一步中，您将把提取的特征视为序列，并使用sequenceInputLayer作为深入学习模型的第一层。
+% 当使用sequenceInputLayer作为网络中的第一层时，trainNetwork希望训练和验证数据格式化为序列的单元数组，
+% 其中每个序列随时间推移由特征向量组成。sequenceInputLayer要求时间维度沿第二个维度。
+featuresTrain = permute(featuresTrain,[2,1,3]);
+featuresTrain = squeeze(num2cell(featuresTrain,[1,2]));
+
+numSignals = numel(featuresTrain)
+[numFeatures,numHopsPerSequence] = size(featuresTrain{1})
+% 提取验证特征
+featuresValidation = extract(aFE,audioValidation);
+featuresValidation = permute(featuresValidation,[2,1,3]);
+featuresValidation = squeeze(num2cell(featuresValidation,[1,2]));
+
+% 定义一个训练的神经网络
+% 定义神经网络结构，查看神经网络层的列表以获取更多的信息
+
+layers = [ ...
+    sequenceInputLayer(numFeatures)
+    lstmLayer(50,"OutputMode","last")
+    fullyConnectedLayer(numel(unique(labelsTrain)))
+    softmaxLayer
+    classificationLayer];
+% 使用trainingOptions函数定义训练的参数
+options = trainingOptions("adam", ...
+    "Shuffle","every-epoch", ...
+    "ValidationData",{featuresValidation,labelsValidation}, ...
+    "Plots","training-progress", ...
+    "Verbose",false);
+% 使用trainNetwork函数训练神经网络
+net = trainNetwork(featuresTrain,labelsTrain,layers,options);
+
+%使用三种噪声测试神经网络
+% wNoiseTest = 2*rand([N,1]) - 1;
+% classify(net,extract(aFE,wNoiseTest)')
+% 
+% bNoiseTest = filter(1,[1,-0.999],wNoiseTest);
+% bNoiseTest= bNoiseTest./max(abs(bNoiseTest),[],'all');
+% classify(net,extract(aFE,bNoiseTest)')
+% 
+% pNoiseTest = pinknoise(N);
+% classify(net,extract(aFE,pNoiseTest)')
+
+[y,Fs]=audioread('demo.wav');%读出信号，采样率和采样位数。
+pos = 100000; % 测试位置，我随便选的数
+y=y(pos+1:pos+22050,1); %文件里由两个声道，只取其中一个声道中的其中一段测试
+classify(net,extract(aFE,y)')
